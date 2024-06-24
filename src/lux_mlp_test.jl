@@ -5,15 +5,11 @@ using Optimisers
 using ADTypes
 using GLMakie
 
-hill(x, β, κ, S) = β - κ^S * β / (x^S + κ^S)
-
-function generate_data(rng, n, β, κ, S; σ=0.05)
-    x = 2 * rand(rng, n)
-    y = hill.(x, β, κ, S)
+function generate_data(rng, n; σ=0.05)
+    x = rand(rng, n)
+    y = 5 * x + sin.(4π * x)
     noise = σ * randn(rng, n)
-    noise = ifelse.(x .> 1, noise .- 0.5, noise)
     y += noise
-    y = max.(y, 0.0)
     return x, y 
 end
 
@@ -78,21 +74,30 @@ end
 function run()
     rng = Xoshiro(1)
 
-    β = 1.0
-    κ = 0.6
-    S = 3.0
-    xrange = collect(range(0, 2.0, length=100))
+    xrange = collect(range(0, 1, length=100))
 
     fig = Figure()
     ax = Axis(fig[1, 1])
-    lines!(ax, xrange, hill.(xrange, β, κ, S), color=:black)
+    lines!(ax, xrange, 5 * xrange + sin.(4π * xrange), color=:black)
 
-    x, y = generate_data(rng, 200, β, κ, S; σ=0.1) 
+    x, y = generate_data(rng, 200; σ=0.1) 
     scatter!(ax, x, y, color=:gray)
 
     data = (x', y') .|> cpu_device()
-    model = Chain(Monotone(1, 16), Monotone(16, 1))
-    # model = Chain(Dense(1 => 16, Lux.relu), Dense(16=> 1))
+    # model = Chain(
+    #     Monotone(1, 32),
+    #     Monotone(32, 32),
+    #     Monotone(32, 32),
+    #     Monotone(32, 32),
+    #     Monotone(32, 1)
+    # )
+    model = Chain(
+        Dense(1 => 32, Lux.relu), 
+        Dense(32 => 32, Lux.relu), 
+        Dense(32 => 32, Lux.relu), 
+        Dense(32 => 32, Lux.relu), 
+        Dense(32 => 1)
+    )
     opt = Adam(0.03f0)
     loss_func = MSELoss()
     tstate = Lux.Experimental.TrainState(rng, model, opt)
