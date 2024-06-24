@@ -1,17 +1,15 @@
+# A Toy Experiment of Constrained Monotone Neural Networks
+
 using Lux
 using Random
 using Zygote
 using Optimisers
 using ADTypes
-using GLMakie
+using CairoMakie
 
-function generate_data(rng, n; σ=0.05)
-    x = rand(rng, n)
-    y = 5 * x + sin.(4π * x)
-    noise = σ * randn(rng, n)
-    y += noise
-    return x, y 
-end
+
+# Monotone Relu Layer
+# ===================
 
 struct Monotone{F1, F2} <: Lux.AbstractExplicitLayer
     in_dims::Int
@@ -30,95 +28,136 @@ function Monotone(
     isconvex=false,
     isconcave=false
 )
-    Monotone{typeof(init_weight), typeof(init_bias)}(in_dims, out_dims, init_weight, init_bias, isconvex, isconcave)
+    Monotone{typeof(init_weight), typeof(init_bias)}(
+        in_dims,
+        out_dims, 
+        init_weight, 
+        init_bias, 
+        isconvex, 
+        isconcave
+    )
 end
 
 function Lux.initialparameters(rng::AbstractRNG, m::Monotone)
-    return (weight=m.init_weight(rng, m.out_dims, m.in_dims),
-        bias=m.init_bias(rng, m.out_dims, 1))
+    return (
+        weight=m.init_weight(rng, m.out_dims, m.in_dims),
+        bias=m.init_bias(rng, m.out_dims, 1)
+    )
 end
-Lux.initialstates(::AbstractRNG, ::Monotone) = NamedTuple()
 
+Lux.initialstates(::AbstractRNG, ::Monotone) = NamedTuple()
 Lux.parameterlength(m::Monotone) = m.in_dims * m.out_dims + m.out_dims
 Lux.statelength(::Monotone) = 0
 
+
+# The activation function of the monotone ReLU layer
 ρ̂(ρ˘, x) = -ρ˘(-x)
 ρ̃(ρ˘, x) = ifelse.(x .< 0, ρ˘(x .+ 1) - ρ˘(x), ρ˘(x .- 1) + ρ˘(x))
-function ρˢ(x, ρ˘; isconvex=false, isconcave=false) 
+function ρˢ(x, ρ˘; activaton_weights=[2, 2, 1], isconvex=false, isconcave=false) 
+    isconvex && return ρ˘(x)
+    isconcave && return ρ̂(ρ˘, x)
+
+    # Split the input into convex, concave, and saturated parts
     n = size(x, 1)
-    if isconvex
-        return ρ˘(x)
-    end
-    if isconcave
-        return ρ̂(ρ˘, x)
-    end
-    s = Int.(round.(n * [2, 2, 1] / 5))
+    s = Int.(round.(n * activaton_weights / sum(activaton_weights)))
     s_convex = s[1]
     s_concave = s[2]
     s_saturated = n - s_convex - s_concave
-    vcat(
-        ρ˘.(x[1:s_convex, :]),
-        ρ̂.(ρ˘, x[s_convex+1:s_convex+s_saturated, :]),
-        ρ̃.(ρ˘, x[s_convex+s_saturated+1:end, :])
-        )
+    return vcat(
+        ρ˘.(@view(x[1:s_convex, :])),
+        ρ̂.(ρ˘, @view(x[s_convex+1:s_convex+s_saturated, :])),
+        ρ̃.(ρ˘, @view(x[s_convex+s_saturated+1:end, :]))
+    )
 end
 
 function (m::Monotone)(x::AbstractMatrix, ps, st::NamedTuple)
-    if m.out_dims == 1
-        return abs.(ps.weight) * x .+ ps.bias, st
-    else
-        return ρˢ(abs.(ps.weight) * x .+ ps.bias, Lux.relu; m.isconvex, m.isconcave), st
-    end
+    m.out_dims == 1 && return (abs.(ps.weight) * x .+ ps.bias, st)  # Final layer
+    return (ρˢ(abs.(ps.weight) * x .+ ps.bias, Lux.relu; m.isconvex, m.isconcave), st)
 end
 
-function run()
-    rng = Xoshiro(1)
 
-    xrange = collect(range(0, 1, length=100))
+# Synthetic Data Generation
+# =========================
 
-    fig = Figure()
-    ax = Axis(fig[1, 1])
-    lines!(ax, xrange, 5 * xrange + sin.(4π * xrange), color=:black)
+f(x) = 5 * x + sin(4π * x)
 
-    x, y = generate_data(rng, 200; σ=0.1) 
-    scatter!(ax, x, y, color=:gray)
+function generate_data(rng, n; xmax=1.0, σ=0.05)
+    x = xmax * rand(rng, n)
+    y = f.(x) + σ * randn(rng, n)
+    return x, y 
+end
 
-    data = (x', y') .|> cpu_device()
-    # model = Chain(
-    #     Monotone(1, 32),
-    #     Monotone(32, 32),
-    #     Monotone(32, 32),
-    #     Monotone(32, 32),
-    #     Monotone(32, 1)
-    # )
-    model = Chain(
-        Dense(1 => 32, Lux.relu), 
-        Dense(32 => 32, Lux.relu), 
-        Dense(32 => 32, Lux.relu), 
-        Dense(32 => 32, Lux.relu), 
-        Dense(32 => 1)
-    )
-    opt = Adam(0.03f0)
-    loss_func = MSELoss()
+
+# Run Experiment
+# ==============
+
+function train_model(rng, model, data, opt, loss_func, n_epochs)
     tstate = Lux.Experimental.TrainState(rng, model, opt)
     vjp_rule = AutoZygote()
-
-    #y_pred_init = Lux.apply(tstate.model, xrange', tstate.parameters, tstate.states)
-    #lines!(ax, xrange, vec(y_pred_init[1]), color=:red, linestyle=:dash)
-
-    n_epochs = 1000
     loss_history = zeros(n_epochs)
     for epoch in 1:n_epochs
         _, loss, _, tstate = Lux.Experimental.single_train_step!(
             vjp_rule, loss_func, data, tstate)
         loss_history[epoch] = loss
     end
+    return tstate, loss_history
+end
+
+function run()
+
+    rng = Xoshiro(1)
     
-    y_pred = Lux.apply(tstate.model, xrange', tstate.parameters, tstate.states)
-    lines!(ax, xrange, vec(y_pred[1]), color=:red, linestyle=:solid)
+    # parameters
+    # ----------
+
+    # Data
+    N = 100
+    σ = 0.1
+    xmax = 1.0
+
+    # Model
+    n_epochs = 500
+    ordinal_model = Chain(
+        Dense(1 => 32, relu), 
+        Dense(32 => 32, relu), 
+        Dense(32 => 32, relu), 
+        Dense(32 => 32, relu), 
+        Dense(32 => 1)
+    )
+    monotone_model = Chain(
+        Monotone(1, 32),
+        Monotone(32, 32),
+        Monotone(32, 32),
+        Monotone(32, 32),
+        Monotone(32, 1)
+    )
+
+    # ---------------- 
+
+    # generate data
+    x, y = generate_data(rng, N; σ=σ, xmax=xmax) 
+    data = (x', y') .|> cpu_device()
+
+    # train models
+    ord_state, ord_loss = train_model(rng, ordinal_model, data, Adam(0.03f0), MSELoss(), n_epochs) 
+    mon_state, mon_loss = train_model(rng, monotone_model, data, Adam(0.03f0), MSELoss(), n_epochs)
+
+    # plot results
+    xrange = collect(range(0, xmax, length=100))
+    ord_pred = Lux.apply(ordinal_model, xrange', ord_state.parameters, ord_state.states)[1] |> vec
+    mon_pred = Lux.apply(monotone_model, xrange', mon_state.parameters, mon_state.states)[1] |> vec
+
+    fig = Figure()
+    ax = Axis(fig[1, 1])
+   
+    scatter!(ax, x, y, color=:gray)
+    lines!(ax, xrange, f.(xrange), color=:black)
+
+    lines!(ax, xrange, ord_pred, color=:red, linestyle=:solid, label="Ordinary NN")
+    lines!(ax, xrange, mon_pred, color=:blue, linestyle=:solid, label="Monotone NN")
+
+    Legend(fig[1, 2], ax)
     
-    ax_loss = Axis(fig[1, 2])
-    lines!(ax_loss, 1:n_epochs, loss_history, color=:black)
-    fig
+    save("result.png", fig)
 end
 
