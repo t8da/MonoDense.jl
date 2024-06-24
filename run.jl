@@ -117,6 +117,8 @@ function run()
 
     # Model
     n_epochs = 500
+    lr = 0.03f0
+    loss = MSELoss()
     ordinal_model = Chain(
         Dense(1 => 32, relu), 
         Dense(32 => 32, relu), 
@@ -139,8 +141,8 @@ function run()
     data = (x', y') .|> cpu_device()
 
     # train models
-    ord_state, ord_loss = train_model(rng, ordinal_model, data, Adam(0.03f0), MSELoss(), n_epochs) 
-    mon_state, mon_loss = train_model(rng, monotone_model, data, Adam(0.03f0), MSELoss(), n_epochs)
+    ord_state, ord_loss = train_model(rng, ordinal_model, data, Adam(lr), loss, n_epochs) 
+    mon_state, mon_loss = train_model(rng, monotone_model, data, Adam(lr), loss, n_epochs)
 
     # plot results
     xrange = collect(range(0, xmax, length=100))
