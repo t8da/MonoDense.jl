@@ -88,7 +88,7 @@ function generate_data(rng, n; xmax=1.0, σ=0.05)
 end
 
 
-# Run Experiment
+# Run
 # ==============
 
 function train_model(rng, model, data, opt, loss_func, n_epochs)
