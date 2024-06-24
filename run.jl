@@ -1,4 +1,4 @@
-# A Toy Experiment of Constrained Monotone Neural Networks
+# A Toy Experiment of Constrained Monotonic Neural Networks
 
 using Lux
 using Random
